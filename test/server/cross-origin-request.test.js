@@ -1,7 +1,10 @@
 "use strict";
 
+const http = require("http");
+const url = require("url");
 const request = require("supertest");
 const webpack = require("webpack");
+const WebSocket = require("ws");
 const Server = require("../../lib/Server");
 const config = require("../fixtures/client-config/webpack.config");
 const port = require("../ports-map")["cross-origin-request-option"];
@@ -479,5 +482,157 @@ describe("cross-site request forgery on state-changing endpoints", () => {
     const response = await req.get(endpoint).set({ Host: `localhost:${port}` });
 
     expect(response.status).toEqual(200);
+  });
+});
+
+// A malformed `Host`/`Origin` header value used to make `url.parse()` throw
+// while being validated; on the WebSocket upgrade path the exception escaped
+// as an uncaught exception and took down the whole dev server process
+describe("malformed 'Host' and 'Origin' header values", () => {
+  // `[::1` is an invalid IPv6 literal; a soft hyphen (U+00AD) is removed by
+  // IDNA mapping, leaving an empty hostname that newer Node.js versions reject
+  // with `ERR_INVALID_URL` (it is latin-1, so it survives a real HTTP header)
+  const malformedHosts = [
+    ["an invalid IPv6 literal", "[::1"],
+    ["a soft hyphen", "­"],
+  ];
+  const malformedOrigins = [
+    ["an invalid IPv6 literal", "http://[::1/"],
+    ["a soft hyphen", "http://­"],
+  ];
+  const webSocketCases = [
+    ...malformedHosts.map(([name, host]) => [
+      `a 'Host' header with ${name}`,
+      { host, origin: `http://localhost:${port}` },
+    ]),
+    ...malformedOrigins.map(([name, origin]) => [
+      `an 'Origin' header with ${name}`,
+      { host: `localhost:${port}`, origin },
+    ]),
+  ];
+
+  function isMalformed(value) {
+    return (
+      typeof value === "string" &&
+      (value.includes("­") || /\[::1(?!\])/.test(value))
+    );
+  }
+
+  describe.each([
+    ["as parsed by the running Node.js version", false],
+    ["when 'url.parse()' throws on them (as newer Node.js versions do)", true],
+  ])("%s", (_title, simulateParseError) => {
+    let server;
+    let parseSpy;
+
+    beforeAll(async () => {
+      const compiler = webpack(config);
+
+      server = new Server({ port, allowedHosts: "auto" }, compiler);
+
+      await server.start();
+    });
+
+    afterAll(async () => {
+      await server.stop();
+    });
+
+    beforeEach(() => {
+      if (simulateParseError) {
+        const originalParse = url.parse;
+
+        parseSpy = jest.spyOn(url, "parse").mockImplementation((...args) => {
+          if (isMalformed(args[0])) {
+            throw new TypeError(`Invalid URL: ${args[0]}`);
+          }
+
+          return originalParse(...args);
+        });
+      }
+    });
+
+    afterEach(() => {
+      if (parseSpy) {
+        parseSpy.mockRestore();
+        parseSpy = null;
+      }
+    });
+
+    it.each(malformedHosts)(
+      "should reject a 'Host' header with %s",
+      (_name, host) => {
+        expect(server.checkHeader({ host }, "host", true)).toBe(false);
+        expect(server.checkHeader({ host }, "host", false, false)).toBe(false);
+        expect(
+          server.isSameOrigin({ host, origin: `http://localhost:${port}` })
+        ).toBe(false);
+      }
+    );
+
+    it.each(malformedOrigins)(
+      "should reject an 'Origin' header with %s",
+      (_name, origin) => {
+        const headers = { host: `localhost:${port}`, origin };
+
+        expect(server.isSameOrigin(headers)).toBe(false);
+        expect(server.checkHeader(headers, "origin", false)).toBe(false);
+        expect(server.isSameOriginRequest({ headers })).toBe(false);
+      }
+    );
+
+    it.each(malformedHosts)(
+      "should respond with 'Invalid Host header' to a request with a 'Host' header with %s",
+      async (_name, host) => {
+        const response = await request(server.app)
+          .get("/main.js")
+          .set({ Host: host })
+          .buffer(true);
+
+        expect(response.status).toEqual(200);
+        expect(response.text).toEqual("Invalid Host header");
+      }
+    );
+
+    it.each(webSocketCases)(
+      "should close a WebSocket connection with %s and keep running",
+      async (_name, headers) => {
+        const messages = await new Promise((resolve) => {
+          const received = [];
+          const ws = new WebSocket(`ws://localhost:${port}/ws`, { headers });
+          // never wait forever for the server to close the connection
+          const timeout = setTimeout(() => {
+            ws.terminate();
+          }, 10000);
+
+          ws.on("message", (data) => {
+            received.push(JSON.parse(data.toString()));
+          });
+          ws.on("close", () => {
+            clearTimeout(timeout);
+            resolve(received);
+          });
+          ws.on("error", () => {
+            clearTimeout(timeout);
+            resolve(received);
+          });
+        });
+
+        expect(messages).toEqual([
+          { type: "error", data: "Invalid Host/Origin header" },
+        ]);
+
+        // the dev server process is still alive and serving requests
+        const status = await new Promise((resolve, reject) => {
+          http
+            .get(`http://localhost:${port}/main.js`, (res) => {
+              res.resume();
+              resolve(res.statusCode);
+            })
+            .on("error", reject);
+        });
+
+        expect(status).toEqual(200);
+      }
+    );
   });
 });
