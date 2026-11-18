@@ -838,9 +838,49 @@ describe("API", () => {
       tests.forEach((test) => {
         const headers = { host: test };
 
-        if (!server.checkHeader(headers, "host")) {
+        if (!server.checkHeader(headers, "host", true)) {
           throw new Error("Validation didn't pass");
         }
+      });
+    });
+
+    it("should not allow access for origin header using an IP from a different host", () => {
+      const options = {};
+
+      const tests = [
+        { origin: "http://192.168.1.1", host: "localhost:8080" },
+        { origin: "http://192.168.1.1/", host: "127.0.0.1:8080" },
+        { origin: "http://[::1]:3000", host: "localhost:8080" },
+        { origin: "http://[ad42::1de2:54c2:c2fa:1234]", host: "[::1]:8080" },
+        { origin: "http://192.168.1.1" },
+      ];
+
+      const compiler = webpack(config);
+      const server = new Server(options, compiler);
+
+      tests.forEach((headers) => {
+        const allowIP = server.isSameOrigin(headers);
+
+        expect(server.checkHeader(headers, "origin", allowIP)).toBe(false);
+      });
+    });
+
+    it("should allow access for origin header using an IP from the same host", () => {
+      const options = {};
+
+      const tests = [
+        { origin: "http://192.168.1.123:3000", host: "192.168.1.123:8080" },
+        { origin: "http://127.0.0.1:8080", host: "127.0.0.1:8080" },
+        { origin: "http://[::1]:8080", host: "[::1]:8080" },
+      ];
+
+      const compiler = webpack(config);
+      const server = new Server(options, compiler);
+
+      tests.forEach((headers) => {
+        const allowIP = server.isSameOrigin(headers);
+
+        expect(server.checkHeader(headers, "origin", allowIP)).toBe(true);
       });
     });
 
