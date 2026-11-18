@@ -201,3 +201,159 @@ describe("cross-origin request check", () => {
     });
   });
 });
+
+// Browsers only send `Sec-Fetch-*` headers to potentially trustworthy origins,
+// so a cross-site `<script src>` over plain HTTP arrives without them
+// @see https://github.com/webpack/webpack-dev-server/security/advisories/GHSA-79cf-xcqc-c78w
+describe("cross-origin resource policy header", () => {
+  let server;
+  let req;
+
+  async function startServer(options) {
+    const compiler = webpack(config);
+
+    server = new Server({ port, ...options }, compiler);
+
+    await server.start();
+
+    req = request(server.app);
+  }
+
+  afterEach(async () => {
+    if (server) {
+      await server.stop();
+      server = null;
+    }
+  });
+
+  it("should set 'Cross-Origin-Resource-Policy: same-origin' by default for requests without fetch metadata headers", async () => {
+    await startServer({});
+
+    const response = await req
+      .get("/main.js")
+      .set({ Host: `localhost:${port}` });
+
+    expect(response.status).toEqual(200);
+    expect(response.headers["cross-origin-resource-policy"]).toEqual(
+      "same-origin"
+    );
+  });
+
+  it("should set 'Cross-Origin-Resource-Policy: same-origin' for an IP address host", async () => {
+    await startServer({ allowedHosts: "auto" });
+
+    const response = await req
+      .get("/main.js")
+      .set({ Host: `127.0.0.1:${port}` });
+
+    expect(response.status).toEqual(200);
+    expect(response.headers["cross-origin-resource-policy"]).toEqual(
+      "same-origin"
+    );
+  });
+
+  it("should set 'Cross-Origin-Resource-Policy: same-origin' for built-in routes", async () => {
+    await startServer({});
+
+    const response = await req
+      .get("/webpack-dev-server")
+      .set({ Host: `localhost:${port}` });
+
+    expect(response.status).toEqual(200);
+    expect(response.headers["cross-origin-resource-policy"]).toEqual(
+      "same-origin"
+    );
+  });
+
+  it("should not set the 'Cross-Origin-Resource-Policy' header with the 'allowedHosts' option and the 'all' value", async () => {
+    await startServer({ allowedHosts: "all" });
+
+    const response = await req
+      .get("/main.js")
+      .set({ Host: `localhost:${port}` });
+
+    expect(response.status).toEqual(200);
+    expect(response.headers["cross-origin-resource-policy"]).toBeUndefined();
+  });
+
+  it("should not set the 'Cross-Origin-Resource-Policy' header for a host explicitly listed in the 'allowedHosts' option", async () => {
+    await startServer({ allowedHosts: ["localhost"] });
+
+    const response = await req
+      .get("/main.js")
+      .set({ Host: `localhost:${port}` });
+
+    expect(response.status).toEqual(200);
+    expect(response.headers["cross-origin-resource-policy"]).toBeUndefined();
+  });
+
+  it("should set the 'Cross-Origin-Resource-Policy' header for a host not listed in the 'allowedHosts' option", async () => {
+    await startServer({ allowedHosts: ["localhost"] });
+
+    const response = await req
+      .get("/main.js")
+      .set({ Host: `127.0.0.1:${port}` });
+
+    expect(response.status).toEqual(200);
+    expect(response.headers["cross-origin-resource-policy"]).toEqual(
+      "same-origin"
+    );
+  });
+
+  it("should not set the 'Cross-Origin-Resource-Policy' header with a wildcard 'Access-Control-Allow-Origin' header", async () => {
+    await startServer({ headers: { "Access-Control-Allow-Origin": "*" } });
+
+    const response = await req
+      .get("/main.js")
+      .set({ Host: `localhost:${port}` });
+
+    expect(response.status).toEqual(200);
+    expect(response.headers["access-control-allow-origin"]).toEqual("*");
+    expect(response.headers["cross-origin-resource-policy"]).toBeUndefined();
+  });
+
+  it("should not set the 'Cross-Origin-Resource-Policy' header with a wildcard 'Access-Control-Allow-Origin' header in the array form", async () => {
+    await startServer({
+      headers: [{ key: "access-control-allow-origin", value: " * " }],
+    });
+
+    const response = await req
+      .get("/main.js")
+      .set({ Host: `localhost:${port}` });
+
+    expect(response.status).toEqual(200);
+    expect(response.headers["cross-origin-resource-policy"]).toBeUndefined();
+  });
+
+  it("should set the 'Cross-Origin-Resource-Policy' header with a specific-origin 'Access-Control-Allow-Origin' header", async () => {
+    await startServer({
+      headers: { "Access-Control-Allow-Origin": "http://foo.example.com" },
+    });
+
+    const response = await req
+      .get("/main.js")
+      .set({ Host: `localhost:${port}` });
+
+    expect(response.status).toEqual(200);
+    expect(response.headers["cross-origin-resource-policy"]).toEqual(
+      "same-origin"
+    );
+  });
+
+  it("should set the 'Cross-Origin-Resource-Policy' header when the 'headers' option is a function", async () => {
+    await startServer({
+      headers: () => {
+        return { "Access-Control-Allow-Origin": "*" };
+      },
+    });
+
+    const response = await req
+      .get("/main.js")
+      .set({ Host: `localhost:${port}` });
+
+    expect(response.status).toEqual(200);
+    expect(response.headers["cross-origin-resource-policy"]).toEqual(
+      "same-origin"
+    );
+  });
+});
