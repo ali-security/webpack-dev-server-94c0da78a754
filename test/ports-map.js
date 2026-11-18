@@ -81,6 +81,7 @@ const listOfTests = {
   "setup-middlewares-option": 1,
   "cross-origin-request": 2,
   "cross-origin-request-option": 1,
+  "proxy-option-hmr": 2,
 };
 
 let startPort = 8089;
