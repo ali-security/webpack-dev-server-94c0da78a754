@@ -575,7 +575,9 @@ describe("proxy option", () => {
         });
 
         beforeEach((done) => {
-          ws = new WebSocket(`ws://localhost:${port3}/proxy3/socket`);
+          ws = new WebSocket(`ws://localhost:${port3}/proxy3/socket`, {
+            origin: `http://localhost:${port3}`,
+          });
 
           ws.on("message", (message) => {
             responseMessage = message.toString();
@@ -777,6 +779,19 @@ describe("proxy option", () => {
           expect(opened).toBe(true);
           expect(forwarded).toBe(false);
           expect(proxyLogs).toEqual([]);
+        });
+
+        it("does not forward the HMR upgrade after an HTTP proxy request", async () => {
+          await request(server.server).get("/api/hello").expect(200);
+
+          const { opened } = await probe(hmrPath);
+
+          await new Promise((resolve) => {
+            setTimeout(resolve, 100);
+          });
+
+          expect(opened).toBe(true);
+          expect(backendUpgradeCount).toBe(0);
         });
 
         it("forwards a non-HMR upgrade to the user proxy", async () => {
